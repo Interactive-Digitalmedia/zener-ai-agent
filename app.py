@@ -31,26 +31,34 @@ def blur_dark_flags(img_bytes: bytes, blur_thr=100.0, bright_thr=50.0):
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     """
-    Returns:
+    Upload one image → get
       corrosion        – True if corrosion detected
-      confidence_pct   – Probability (0-100) the image is corroded
+      confidence_pct   – How sure the model is about its label (0-100 %)
       warning_blur     – True if image seems blurry
       warning_dark     – True if image seems dark
     """
+    # ── 1.  Get raw bytes from the upload
     img_bytes = await file.read()
 
-    # quality checks
+    # ── 2.  Fast blur / brightness check (heuristic warnings)
     is_blur, is_dark = blur_dark_flags(img_bytes)
+    is_blur = bool(is_blur)   # cast NumPy bool  →  plain bool
+    is_dark = bool(is_dark)
 
-    # inference
+    # ── 3.  Run the model
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     with torch.no_grad():
-        p_no  = model(prep(img).unsqueeze(0).to(DEVICE)).item() * 100  # P(no-corrosion)
-    p_corr = 100.0 - p_no                                              # flip to P(corrosion)
+        p_no = model(prep(img).unsqueeze(0).to(DEVICE)).item() * 100   # P(no-corrosion) %
+    p_corr = 100.0 - p_no                                              # P(corrosion)   %
 
+    # ── 4.  Decide label and confidence
+    is_rust     = p_corr >= 50.0
+    confidence  = p_corr if is_rust else p_no      # larger prob = confidence
+
+    # ── 5.  Return JSON
     return {
-        "corrosion":       p_corr >= 50.0,
-        "confidence_pct":  round(p_corr, 2),
+        "corrosion":       is_rust,                   # True = corrosion detected
+        "confidence_pct":  round(confidence, 2),      # 0-100 %
         "warning_blur":    is_blur,
         "warning_dark":    is_dark,
     }
